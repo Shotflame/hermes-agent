@@ -736,6 +736,90 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_nul_bearing_path_token_does_not_crash_public_guard(self):
+        """End-to-end: the crash escaped through the public entry point, which
+        is what tools/terminal_tool.py calls — so the terminal tool itself
+        failed with a traceback instead of running the command."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                "bash /tmp/foo\x00bar.sh", cwd="/tmp"
+            )
+            is False
+        )
+
+    def test_nul_from_remote_script_backend_does_not_crash_guard(self):
+        """The NUL can also arrive from the remote-script backend's text, which
+        the walk re-tokenizes into path tokens."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                "bash /remote/deploy.sh",
+                cwd="/tmp",
+                read_remote_script=lambda _p: "bash /opt/tool\x00bin.sh\n",
+            )
+            is False
+        )
+
+    def test_nul_bearing_cron_script_value_does_not_crash_guard(self):
+        """The cron-creation path reaches the same open() via
+        _read_script_for_scanning, so it crashed identically."""
+        from cron.lifecycle_guard import check_gateway_lifecycle
+
+        check_gateway_lifecycle("daily ops", "/tmp/foo\x00bar.sh")
+
+    def test_symlink_loop_does_not_crash_guard(self, tmp_path):
+        """Same bug class, different exception: CPython's pathlib raises
+        RuntimeError (not OSError) for a symlink loop, so a self-referential
+        script path escaped the resolve() guard and crashed the caller."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        first = tmp_path / "loop.sh"
+        second = tmp_path / "other.sh"
+        first.symlink_to(second)
+        second.symlink_to(first)
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {first}", cwd=str(tmp_path)
+            )
+            is False
+        )
+
+    def test_classification_of_normal_scripts_is_unchanged(self, tmp_path):
+        """The guard must still classify ordinary scripts exactly as before:
+        a lifecycle command in a referenced script is caught, and a benign one
+        is not. Widening an except clause must not weaken detection."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        unsafe_script = tmp_path / "restart.sh"
+        unsafe_script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        benign_script = tmp_path / "benign.sh"
+        benign_script.write_text("#!/bin/bash\necho hello\n")
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {unsafe_script}", cwd=str(tmp_path)
+            )
+            is True
+        )
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {benign_script}", cwd=str(tmp_path)
+            )
+            is False
+        )
+
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""

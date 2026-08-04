@@ -318,10 +318,14 @@ def _contains_unsafe_gateway_action(
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
         try:
             resolved = script_path.resolve(strict=False)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             # OSError: unreadable/long paths. ValueError: embedded NUL byte
             # from a binary's decoded contents tokenized as a path — a
             # guarded path must never crash the guard (#76762).
+            # RuntimeError: CPython's pathlib raises it (not OSError) for a
+            # symlink loop, so a self-referential script path crashed the
+            # guard the same way. Keep the unresolved path: the visited-set
+            # de-duplication degrades but the scan still runs.
             resolved = script_path
         if resolved in visited:
             continue
