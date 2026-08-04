@@ -18,6 +18,24 @@ from hermes_cli.cron import (
 )
 
 
+def _unknown_user_name() -> str:
+    """Return a username that is guaranteed not to resolve on this machine.
+
+    The precondition is checked through ``os.path.expanduser`` rather than
+    ``pwd`` so it stays portable: that function documents "if user or $HOME is
+    unknown, do nothing", so a token it returns verbatim is one no home
+    directory could be found for — exactly the input that makes
+    ``pathlib.Path.expanduser()`` raise.
+    """
+    for candidate in ("nosuchuser99xyz", "nosuchuser99xyz2", "hermes-no-such-user-31337"):
+        if os.path.expanduser(f"~{candidate}") == f"~{candidate}":
+            return candidate
+    raise RuntimeError("could not find a non-resolving username for the test")
+
+
+_UNKNOWN_USER = _unknown_user_name()
+
+
 # ---------------------------------------------------------------------------
 # Defense 2: _contains_gateway_lifecycle_command pattern tests
 # ---------------------------------------------------------------------------
@@ -793,6 +811,177 @@ class TestLifecycleGuardModule:
             )
             is False
         )
+
+    def test_nul_from_shell_payload_does_not_crash_guard(self):
+        """The payload-recursion route: a NUL-bearing path inside ``sh -c``
+        code reaches the same open() one recursion level down. This route was
+        claimed as covered but had no test until now."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                "sh -c 'bash /tmp/inner\x00x.sh'"
+            )
+            is False
+        )
+
+    def test_unknown_user_tilde_path_does_not_crash_public_guard(self):
+        """Same bug class as the NUL path, third exception type.
+
+        ``pathlib.Path.expanduser()`` raises RuntimeError for a tilde naming an
+        unknown user, so ``bash ~nosuchuser/x.sh`` crashed the guard — and with
+        it the terminal tool — exactly like the NUL-bearing path did.
+        ``os.path.expanduser()`` does NOT raise for this input, which is why an
+        audit that probed the ``os.path`` form saw no hole.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash ~{_UNKNOWN_USER}/x.sh"
+            )
+            is False
+        )
+
+    def test_unknown_user_tilde_in_shell_payload_does_not_crash_guard(self):
+        """The payload-recursion route reaches the same expansion."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"sh -c 'bash ~{_UNKNOWN_USER}/x.sh'"
+            )
+            is False
+        )
+
+    def test_unknown_user_tilde_from_script_content_does_not_crash_guard(self, tmp_path):
+        """The reachable route that matters: the token comes from a referenced
+        script's CONTENT — the identical delivery path as the NUL bug."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        outer = tmp_path / "outer.sh"
+        outer.write_text(f"#!/bin/sh\nbash ~{_UNKNOWN_USER}/inner.sh\n")
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {outer}", cwd=str(tmp_path)
+            )
+            is False
+        )
+
+    def test_unknown_user_tilde_cron_script_value_does_not_crash_guard(self):
+        """The cron-creation path resolves the script value through the same
+        expansion, so it crashed identically."""
+        from cron.lifecycle_guard import check_gateway_lifecycle
+
+        check_gateway_lifecycle("daily ops", f"~{_UNKNOWN_USER}/x.sh")
+
+    def test_unknown_user_tilde_directory_is_still_scanned(self, tmp_path):
+        """The security contract, not just the absence of a crash.
+
+        A POSIX shell does not fail on ``bash ~nosuchuser/x.sh`` — it runs the
+        LITERAL relative path ``./~nosuchuser/x.sh``. So a lifecycle command in
+        a script under a literal ``~nosuchuser/`` directory is genuinely
+        executable, and swallowing the crash as "nothing found" would turn this
+        into a guard bypass. The guard must still detect it.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        literal_dir = tmp_path / f"~{_UNKNOWN_USER}"
+        literal_dir.mkdir()
+        (literal_dir / "x.sh").write_text("#!/bin/sh\nhermes gateway restart\n")
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash ~{_UNKNOWN_USER}/x.sh", cwd=str(tmp_path)
+            )
+            is True
+        )
+
+    def test_benign_script_in_unknown_user_tilde_directory_still_passes(self, tmp_path):
+        """The other half of the contract: scanning that literal directory must
+        not turn benign commands into false positives."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        literal_dir = tmp_path / f"~{_UNKNOWN_USER}"
+        literal_dir.mkdir()
+        (literal_dir / "x.sh").write_text("#!/bin/sh\necho hello\n")
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash ~{_UNKNOWN_USER}/x.sh", cwd=str(tmp_path)
+            )
+            is False
+        )
+
+    def test_known_user_tilde_expansion_still_resolves(self, tmp_path, monkeypatch):
+        """Switching to os.path.expanduser must not stop ``~/`` from expanding:
+        a lifecycle command in a script referenced via ``~/`` is still caught."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "restart.sh").write_text("#!/bin/sh\nhermes gateway restart\n")
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                "bash ~/restart.sh", cwd=str(tmp_path)
+            )
+            is True
+        )
+
+    def test_nul_inside_tilde_username_does_not_crash_guard(self):
+        """A NUL inside the ``~user`` name is rejected by pwd.getpwnam() during
+        expansion — BEFORE the open() call that the NUL-path fix guards — so it
+        escaped that fix and crashed the guard on its own route."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                "bash ~foo\x00bar/x.sh"
+            )
+            is False
+        )
+
+    def test_genuine_recursion_error_is_not_swallowed_as_unresolvable(self):
+        """RecursionError subclasses RuntimeError, so the symlink-loop handler
+        would silently absorb a real stack exhaustion as "unresolvable path".
+        This walk has its own depth cap, so a RecursionError from resolve() is
+        an interpreter-level fault and must propagate."""
+        from pathlib import Path
+
+        import cron.lifecycle_guard as lifecycle_guard
+
+        class _ExplodingPath(type(Path("/tmp"))):
+            def resolve(self, strict=False):
+                raise RecursionError("maximum recursion depth exceeded")
+
+        original = lifecycle_guard._iter_referenced_shell_scripts
+        try:
+            lifecycle_guard._iter_referenced_shell_scripts = (
+                lambda command, *, cwd=None: iter([_ExplodingPath("/tmp/x.sh")])
+            )
+            with pytest.raises(RecursionError):
+                lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+                    "bash /tmp/x.sh"
+                )
+        finally:
+            lifecycle_guard._iter_referenced_shell_scripts = original
 
     def test_classification_of_normal_scripts_is_unchanged(self, tmp_path):
         """The guard must still classify ordinary scripts exactly as before:

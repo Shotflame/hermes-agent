@@ -170,10 +170,53 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+def _expanduser_like_shell(candidate: str) -> Path:
+    """Expand ``~``/``~user`` the way a POSIX shell does, without raising.
+
+    ``pathlib.Path.expanduser()`` raises ``RuntimeError("Could not determine
+    home directory.")`` when the tilde prefix names an unknown user, because it
+    treats "``os.path.expanduser`` returned the string unchanged" as an error.
+    ``os.path.expanduser`` itself does NOT raise — it documents "if user or
+    $HOME is unknown, do nothing" and returns the token verbatim.
+
+    The shell agrees with ``os.path``, not with ``pathlib``: ``bash
+    ~nosuchuser/x.sh`` does not fail, it runs the *literal relative path*
+    ``./~nosuchuser/x.sh``. So the unexpanded token is the path that actually
+    executes, and it is exactly what this guard must scan. Using ``os.path``
+    here therefore both removes the crash and keeps the guard aimed at the file
+    the shell would really run — an unknown-user tilde must not become a blind
+    spot, since a script can sit in a literal ``~nosuchuser/`` directory.
+
+    ``ValueError`` (embedded NUL) is caught here rather than left to escape:
+    ``os.path.expanduser`` calls ``pwd.getpwnam()`` for a ``~user`` token, which
+    rejects a NUL *before* this function ever reaches the ``os.open`` guarded by
+    #76762 — so ``bash ~foo\\x00bar/x.sh`` still crashed the guard even with that
+    fix in place. The unexpanded token is returned so the existing
+    ``(OSError, ValueError)`` handling downstream treats it exactly like any
+    other NUL-bearing path: unopenable, unexecutable, nothing to scan.
+    """
+    try:
+        expanded = os.path.expanduser(candidate)
+    except ValueError:
+        expanded = candidate
+    return Path(expanded)
+
+
 def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Path:
-    path = Path(candidate).expanduser()
+    path = _expanduser_like_shell(candidate)
     if not path.is_absolute():
-        path = Path(cwd or Path.cwd()) / path
+        # Path.cwd() raises FileNotFoundError when the process cwd has been
+        # deleted. A guard must not crash its caller, and a deleted cwd is
+        # also unexploitable: the shell cannot execute a relative path from
+        # a cwd that no longer exists (bash exits 127, "getcwd: cannot access
+        # parent directories"), so there is no command to scan and none that
+        # could run. Fall back to the token itself and let the read below
+        # simply fail to find it.
+        try:
+            base = Path(cwd) if cwd else Path.cwd()
+        except OSError:
+            return path
+        path = base / path
     return path
 
 
@@ -318,6 +361,13 @@ def _contains_unsafe_gateway_action(
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
         try:
             resolved = script_path.resolve(strict=False)
+        except RecursionError:
+            # RecursionError subclasses RuntimeError, so the clause below would
+            # silently swallow a genuine stack exhaustion as "unresolvable
+            # path". This walk has its own depth cap
+            # (_MAX_REFERENCED_SCRIPT_DEPTH), so a RecursionError here is a real
+            # interpreter-level fault, not a guarded condition — let it escape.
+            raise
         except (OSError, ValueError, RuntimeError):
             # OSError: unreadable/long paths. ValueError: embedded NUL byte
             # from a binary's decoded contents tokenized as a path — a
@@ -383,7 +433,14 @@ def _resolve_script_path(script_path: str) -> Path:
     """
     from hermes_constants import get_hermes_home
 
-    raw = Path(script_path).expanduser()
+    # os.path.expanduser, not Path.expanduser: the latter raises RuntimeError
+    # for an unknown-user tilde (``~nosuchuser/x.sh``) and would crash the
+    # guard. The scheduler resolves a non-absolute value under
+    # ``<HERMES_HOME>/scripts/`` (cron/scheduler.py), and an unexpanded
+    # ``~nosuchuser/x.sh`` is not absolute — so scanning the same literal
+    # token keeps this resolver mirroring the scheduler exactly, which is the
+    # documented contract above.
+    raw = _expanduser_like_shell(script_path)
     if raw.is_absolute():
         return raw
     return get_hermes_home() / "scripts" / raw
