@@ -875,6 +875,57 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(f"kanban_block: {e}")
 
 
+def _handle_review(args: dict, **kw) -> str:
+    """Hand finished work to the review lane (running → review)."""
+    delegated_err = _reject_delegated_child_mutation("kanban_review")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    reason = args.get("reason")
+    if reason is not None:
+        reason = redact_sensitive_text(str(reason), force=True)
+    reviewer = args.get("reviewer")
+    if reviewer is not None:
+        reviewer = str(reviewer).strip() or None
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.request_review(
+                conn, tid,
+                reason=reason,
+                reviewer=reviewer,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not move {tid} to review (unknown id or not in "
+                    f"a reviewable state: ready/running)"
+                )
+            run = kb.latest_run(conn, tid)
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "review",
+                reviewer=landed.assignee if landed else reviewer,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal that the worker is still alive during a long operation.
 
@@ -1750,6 +1801,50 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Hand your finished work to the REVIEW lane for an independent "
+        "reviewer. DIFFERENT from kanban_block: block is for STUCK work "
+        "that needs a human decision; review is for DONE work that needs "
+        "a reviewer's eyes before it counts as complete (code review, "
+        "doc QA, acceptance-criteria verification). Moves the task to the "
+        "review column; the dispatcher will spawn a review agent that "
+        "either approves (→ done) or sends it back. Optionally reassign "
+        "to a reviewer profile via `reviewer` (defaults to keeping the "
+        "current assignee)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One or two sentences for the reviewer: what you "
+                    "changed/made and what you want verified. Shown on "
+                    "the board and in the review agent's task body."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": (
+                    "Profile name to run the review as (e.g. the "
+                    "reviewer specialist profile). If omitted, the task "
+                    "keeps its current assignee. Unknown names are "
+                    "silently skipped by the dispatcher, so only pass "
+                    "profiles that exist."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -2160,6 +2255,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_mode,
+    emoji="🔎",
 )
 
 registry.register(

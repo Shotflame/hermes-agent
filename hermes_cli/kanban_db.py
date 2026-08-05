@@ -5827,6 +5827,98 @@ def block_task(
     return True
 
 
+def request_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    reviewer: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> Optional[str]:
+    """Transition ``running``/``ready`` → ``review``.
+
+    The first-class review lane: a worker that finished its work but needs
+    an independent reviewer (code review, doc QA, AC verification) hands the
+    task off to the ``review`` column instead of faking a human ``block``.
+    The dispatcher's review-column dispatch then claims it and spawns a
+    review agent (loading the review skill) that approves (→ done) or
+    rejects.
+
+    Compared to ``block_task`` (which is for *stuck* tasks and feeds the
+    unblock-loop circuit breaker), ``request_review`` is a *handoff*: it
+    must not increment ``block_recurrences`` and must not be treated as a
+    failure by the circuit breaker.
+
+    If ``reviewer`` names a profile, the task is reassigned to that profile
+    before entering ``review`` so the review agent runs as the reviewer
+    (the image's "reviewer assignee" model) rather than the original
+    implementer.
+
+    Returns the on-disk status the task landed in (``"review"``) on success,
+    ``None`` when the task wasn't in a reviewable state.
+    """
+    with write_txn(conn):
+        cur_row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if cur_row is None:
+            return None
+        # Review transitions work from any queued-in-flight state except the
+        # terminal ones. 'ready' covers never-claimed tasks; 'running' covers
+        # a worker handing off mid-run; 'review' is idempotent (re-request).
+        if cur_row["status"] not in ("ready", "running", "review"):
+            return None
+
+        if reviewer is not None:
+            conn.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ?",
+                (reviewer, task_id),
+            )
+
+        base = (
+            "UPDATE tasks "
+            "   SET status = 'review', "
+            "       claim_lock = NULL, "
+            "       claim_expires = NULL, "
+            "       worker_pid = NULL "
+            " WHERE id = ? AND status = ?"
+        )
+        params: tuple = (task_id, cur_row["status"])
+        if expected_run_id is not None:
+            base += " AND current_run_id = ?"
+            params = (task_id, cur_row["status"], int(expected_run_id))
+        cur = conn.execute(base, params)
+        if cur.rowcount != 1:
+            return None
+
+        run_id = _end_run(
+            conn, task_id,
+            outcome="review", status="review",
+            summary=reason,
+        )
+        if run_id is None and reason:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="review", summary=reason,
+            )
+        _append_event(
+            conn, task_id, "review_requested",
+            {"reason": reason, "reviewer": reviewer},
+            run_id=run_id,
+        )
+        _review_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_review_requested",
+        task_id,
+        board=get_current_board(),
+        assignee=_review_task.assignee if _review_task else None,
+        reviewer=reviewer,
+        run_id=run_id,
+        reason=reason,
+    )
+    return "review"
+
+
 
 def promote_task(
     conn: sqlite3.Connection,

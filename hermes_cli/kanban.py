@@ -699,6 +699,41 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Permanently delete already-archived task ids from the board",
     )
 
+    p_review = sub.add_parser(
+        "review",
+        help=(
+            "Move one or more tasks to the REVIEW lane for an independent "
+            "reviewer (worker handoff for finished code/work that needs a "
+            "reviewer's eyes before it counts as done)"
+        ),
+    )
+    p_review.add_argument("task_id")
+    p_review.add_argument(
+        "reason",
+        nargs="*",
+        help="Note for the reviewer (also recorded on the task_events row)",
+    )
+    p_review.add_argument(
+        "--ids",
+        nargs="+",
+        default=None,
+        help="Additional task ids to move to review with the same note (bulk mode)",
+    )
+    p_review.add_argument(
+        "--reviewer",
+        default=None,
+        help=(
+            "Profile to run the review as (e.g. the reviewer specialist "
+            "profile). Defaults to keeping each task's current assignee."
+        ),
+    )
+    p_review.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Emit machine-readable JSON result",
+    )
+
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
     p_tail.add_argument("task_id")
@@ -1067,6 +1102,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
+            "review":   _cmd_review,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
@@ -1132,6 +1168,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "schedule",
     "unblock",
     "promote",
+    "review",
     "archive",
     "dispatch",
     "daemon",
@@ -2384,6 +2421,59 @@ def _cmd_promote(args: argparse.Namespace) -> int:
             print(f"{label} {r['task_id']} -> ready{tag}{suffix}")
         else:
             print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
+    return 0 if not failed else 1
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    reviewer = getattr(args, "reviewer", None)
+    author = _profile_author()
+    as_json = getattr(args, "json", False)
+    extra_ids = list(getattr(args, "ids", None) or [])
+    ids: list[str] = []
+    seen: set[str] = set()
+    for tid in [args.task_id, *extra_ids]:
+        if tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+
+    results: list[dict[str, object]] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"REVIEW: {reason}")
+            landed = kb.request_review(
+                conn,
+                tid,
+                reason=reason,
+                reviewer=reviewer,
+                expected_run_id=_worker_run_id_for(tid),
+            )
+            results.append({
+                "task_id": tid,
+                "reviewed": bool(landed),
+                "reviewer": reviewer,
+                "reason": reason,
+                "status": landed or None,
+            })
+
+    failed = [r for r in results if not r["reviewed"]]
+    if as_json:
+        payload: object = results[0] if len(results) == 1 else results
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if not failed else 1
+
+    for r in results:
+        if r["reviewed"]:
+            suffix = f": {reason}" if reason else ""
+            rw = f" (reviewer: {r['reviewer']})" if r.get("reviewer") else ""
+            print(f"{r['task_id']} → review{rw}{suffix}")
+        else:
+            print(
+                f"cannot move {r['task_id']} to review (not in a reviewable "
+                f"state: ready/running)",
+                file=sys.stderr,
+            )
     return 0 if not failed else 1
 
 
