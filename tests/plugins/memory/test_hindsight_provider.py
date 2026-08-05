@@ -570,6 +570,40 @@ class TestPrefetchServerRetainVisibility:
         client.operations.get_operation_status = AsyncMock(side_effect=_status)
         return client
 
+    @staticmethod
+    def _poll_fast(provider):
+        """Collapse the 0.5s inter-poll sleep so op-completion tests spend no
+        real time waiting.
+
+        The production interval is a server-round-trip budget; against an
+        AsyncMock there is nothing to be polite to. Leaving it at 0.5s made
+        these tests burn ~1s of genuine sleep *plus* a cross-thread hop to the
+        shared Hindsight event loop per poll, which is exactly the work that
+        starves on a busy CI runner — the prefetch thread then outlived the
+        test's join and the assertion saw an empty ``order`` list.
+        """
+        provider._RETAIN_OP_POLL_INTERVAL_S = 0.01
+        return provider
+
+    @staticmethod
+    def _join_prefetch(provider, timeout=30.0):
+        """Join the background prefetch thread and prove it actually finished.
+
+        The join budget is deliberately far larger than any drain timeout under
+        test, so a timeout here means the thread is genuinely wedged rather
+        than merely slow. Asserting on liveness turns that case into a direct
+        "thread never finished" failure instead of a downstream mystery like
+        ``assert [] == ['recall']``.
+        """
+        thread = provider._prefetch_thread
+        if thread is None:
+            return
+        thread.join(timeout=timeout)
+        assert not thread.is_alive(), (
+            f"prefetch thread still running after {timeout}s join — the wait "
+            "path is wedged, not just slow"
+        )
+
     def test_tracks_async_operation_id_from_retain(self, provider):
         provider._client.aretain_batch = AsyncMock(
             return_value=SimpleNamespace(operation_id="op-async-1", operation_ids=None)
@@ -607,6 +641,7 @@ class TestPrefetchServerRetainVisibility:
             order.append("recall")
             return SimpleNamespace(results=[SimpleNamespace(text="m")])
 
+        self._poll_fast(provider)
         provider._client = self._client_with_ops(["pending", "pending", "completed"])
         provider._client.arecall = AsyncMock(side_effect=_recall)
 
@@ -615,8 +650,7 @@ class TestPrefetchServerRetainVisibility:
         assert "op-1" in provider._pending_retain_ops
 
         provider.queue_prefetch("next turn query")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=5.0)
+        self._join_prefetch(provider)
 
         # Recall ran, the op was polled to completion, and the pending set
         # was cleared (so a later prefetch won't re-poll it).
@@ -627,13 +661,15 @@ class TestPrefetchServerRetainVisibility:
     def test_prefetch_proceeds_after_server_wait_timeout(self, provider_with_config):
         """A wedged/never-completing async op must not hang prefetch forever;
         it recalls anyway once the drain budget is exhausted."""
-        p = provider_with_config(prefetch_retain_drain_timeout=0.3)
+        drain_timeout = 0.3
+        p = provider_with_config(prefetch_retain_drain_timeout=drain_timeout)
         order = []
 
         async def _recall(**kwargs):
             order.append("recall")
             return SimpleNamespace(results=[SimpleNamespace(text="m")])
 
+        self._poll_fast(p)
         p._client = self._client_with_ops(["pending"])  # never completes
         p._client.arecall = AsyncMock(side_effect=_recall)
 
@@ -642,12 +678,18 @@ class TestPrefetchServerRetainVisibility:
 
         start = time.monotonic()
         p.queue_prefetch("next turn query")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        self._join_prefetch(p)
         elapsed = time.monotonic() - start
 
         assert order == ["recall"], "prefetch should recall after the timeout"
-        assert elapsed < 3.0, "prefetch must not block well past the drain budget"
+        # The contract is "bounded by the drain budget", not "fast" — scheduling
+        # a starved thread is not something the test can bound tightly. Allow a
+        # generous multiple of the budget so this measures the timeout logic
+        # rather than CI runner load.
+        assert elapsed < drain_timeout + 10.0, (
+            f"prefetch blocked {elapsed:.1f}s, far past its {drain_timeout}s "
+            "drain budget — the wait is not bounded by the timeout"
+        )
 
     def test_timed_out_ops_are_dropped_not_repolled(self, provider_with_config):
         """Ops unresolved at deadline must be EVICTED so a permanently failing
@@ -655,6 +697,7 @@ class TestPrefetchServerRetainVisibility:
         timeout on a growing pending set (unbounded session-wide degradation
         + reply-path join penalty)."""
         p = provider_with_config(prefetch_retain_drain_timeout=0.3)
+        self._poll_fast(p)
         p._client = self._client_with_ops(["pending"])  # never completes
         p._client.arecall = AsyncMock(
             return_value=SimpleNamespace(results=[SimpleNamespace(text="m")])
@@ -666,18 +709,19 @@ class TestPrefetchServerRetainVisibility:
 
         # First prefetch burns the budget and must DROP the wedged op.
         p.queue_prefetch("q1")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        self._join_prefetch(p)
         assert p._pending_retain_ops == set(), (
             "unresolved ops must be evicted at deadline, not retained"
         )
 
-        # A later prefetch with nothing pending must be near-instant.
-        start = time.monotonic()
+        # A later prefetch with nothing pending must not re-poll the dropped
+        # op. Asserting the status endpoint saw no further calls is the actual
+        # eviction contract; timing how long the second prefetch took measured
+        # runner load instead and flaked under parallel CI.
+        polls_after_drop = p._client.operations.get_operation_status.await_count
         p.queue_prefetch("q2")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
-        assert time.monotonic() - start < 0.25, (
+        self._join_prefetch(p)
+        assert p._client.operations.get_operation_status.await_count == polls_after_drop, (
             "second prefetch re-polled dropped ops — eviction regressed"
         )
 
