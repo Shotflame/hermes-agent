@@ -112,11 +112,11 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         buttons = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "plugins.platforms.telegram.mixins.s1_interactive.InlineKeyboardButton",
             lambda text, callback_data: buttons.append(text) or text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+            "plugins.platforms.telegram.mixins.s1_interactive.InlineKeyboardMarkup", lambda rows: rows
         )
 
         await adapter.send_exec_approval(
@@ -133,11 +133,11 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         captured_rows = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "plugins.platforms.telegram.mixins.s1_interactive.InlineKeyboardButton",
             lambda text, callback_data: text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "plugins.platforms.telegram.mixins.s1_interactive.InlineKeyboardMarkup",
             lambda rows: captured_rows.extend(rows) or rows,
         )
 
@@ -158,11 +158,11 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         captured_rows = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "plugins.platforms.telegram.mixins.s1_interactive.InlineKeyboardButton",
             lambda text, callback_data: text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "plugins.platforms.telegram.mixins.s1_interactive.InlineKeyboardMarkup",
             lambda rows: captured_rows.extend(rows) or rows,
         )
 

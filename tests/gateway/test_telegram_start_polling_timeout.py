@@ -40,6 +40,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
+from plugins.platforms.telegram.mixins import s1_network  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -69,7 +70,7 @@ def _bare_adapter():
 async def test_network_ladder_start_polling_hang_does_not_wedge(monkeypatch):
     """A hung start_polling() in _handle_polling_network_error must time out
     and advance the ladder instead of blocking forever (#59614 core repro)."""
-    monkeypatch.setattr(tg_adapter, "_UPDATER_START_TIMEOUT", 0.2)
+    monkeypatch.setattr(s1_network, "_UPDATER_START_TIMEOUT", 0.2)
     a = _bare_adapter()
     a._polling_network_error_count = 0  # attempt 1 → 5s backoff before start_polling
 

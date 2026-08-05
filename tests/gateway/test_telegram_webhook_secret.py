@@ -31,7 +31,12 @@ class TestTelegramWebhookSecretRequired:
     """
 
     def _get_source(self) -> str:
-        path = Path(_repo) / "plugins" / "platforms" / "telegram" / "adapter.py"
+        # connect() (which carries the webhook-secret guard) now lives in the
+        # s1_network mixin after the s1 cluster extraction (#78791).
+        path = (
+            Path(_repo)
+            / "plugins" / "platforms" / "telegram" / "mixins" / "s1_network.py"
+        )
         return path.read_text(encoding="utf-8")
 
     def test_webhook_branch_checks_secret(self):

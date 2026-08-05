@@ -8,6 +8,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.mixins import s1_network
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -105,10 +106,10 @@ def _configure_lifecycle_connect(monkeypatch, adapter, apps):
     async def _no_fallback_ips():
         return []
 
-    monkeypatch.setattr(tg_adapter, "Application", _Application)
-    monkeypatch.setattr(tg_adapter, "HTTPXRequest", _ControlledRequest)
-    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", _no_fallback_ips)
-    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *args, **kwargs: None)
+    monkeypatch.setattr(s1_network, "Application", _Application)
+    monkeypatch.setattr(s1_network, "HTTPXRequest", _ControlledRequest)
+    monkeypatch.setattr(s1_network, "discover_fallback_ips", _no_fallback_ips)
+    monkeypatch.setattr(s1_network, "resolve_proxy_url", lambda *args, **kwargs: None)
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
     monkeypatch.setattr(adapter, "_release_platform_lock", MagicMock())
     monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
@@ -309,10 +310,10 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
     async def _no_fallback_ips():
         return []
 
-    monkeypatch.setattr(tg_adapter, "Application", _Application)
-    monkeypatch.setattr(tg_adapter, "HTTPXRequest", _ControlledRequest)
-    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", _no_fallback_ips)
-    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *args, **kwargs: None)
+    monkeypatch.setattr(s1_network, "Application", _Application)
+    monkeypatch.setattr(s1_network, "HTTPXRequest", _ControlledRequest)
+    monkeypatch.setattr(s1_network, "discover_fallback_ips", _no_fallback_ips)
+    monkeypatch.setattr(s1_network, "resolve_proxy_url", lambda *args, **kwargs: None)
 
     adapter = _make_adapter()
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)

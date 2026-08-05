@@ -36,8 +36,8 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-import plugins.platforms.telegram.adapter as telegram_mod  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.mixins import s1_network  # noqa: E402
 
 
 class TestTelegramUnconfiguredNonRetryable:
@@ -47,7 +47,7 @@ class TestTelegramUnconfiguredNonRetryable:
     async def test_no_telegram_lib_sets_non_retryable_fatal(self, monkeypatch):
         """connect() with python-telegram-bot unavailable → non-retryable fatal error."""
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
-        monkeypatch.setattr(telegram_mod, "TELEGRAM_AVAILABLE", False)
+        monkeypatch.setattr(s1_network, "TELEGRAM_AVAILABLE", False)
         result = await adapter.connect()
         assert result is False
         assert adapter.has_fatal_error is True

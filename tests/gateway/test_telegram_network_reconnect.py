@@ -36,6 +36,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
+from plugins.platforms.telegram.mixins import s1_network  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 
@@ -45,7 +46,7 @@ def _no_auto_discovery(monkeypatch):
     """Disable DoH auto-discovery so connect() uses the plain builder chain."""
     async def _noop():
         return []
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
+    monkeypatch.setattr("plugins.platforms.telegram.mixins.s1_network.discover_fallback_ips", _noop)
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -206,7 +207,7 @@ async def test_reconnect_continues_if_drain_hangs(monkeypatch):
 
     # Keep the drain timeout tiny so the test stays fast; the real default
     # is generous enough not to truncate healthy closes.
-    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.01, raising=False)
+    monkeypatch.setattr(s1_network, "_DRAIN_TIMEOUT", 0.01, raising=False)
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
         # Hard outer bound: on unfixed code the drain hangs forever and this
