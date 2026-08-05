@@ -695,6 +695,51 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_binary_with_embedded_nul_path_token_never_crashes(self, tmp_path):
+        """#76762 deterministic regression: a real on-disk binary whose
+        decoded bytes contain a NUL-bearing path token must never crash the
+        guard.
+
+        This is the exact panic frame from the dump: the walk reads the
+        binary's bytes, the decoded text yields a path with an embedded NUL,
+        and _read_referenced_script/os.open used to raise
+        ValueError: embedded null byte. The guard must treat it as
+        "nothing to scan" and return False without raising.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        binary = tmp_path / "mock-binary"
+        # Premixed shebang + NUL-bearing path token + NUL padding, exactly
+        # matching the reported crash binary's shape.
+        binary.write_bytes(
+            b"#!/bin/sh\n"
+            b"echo ok\n"
+            b"/tmp/fake\x00bin\n"
+            b"\x00" * 16
+        )
+        # Contains a slash -> the referenced-script walk picks the binary up.
+        command = f"{binary} --version"
+        result = contains_gateway_lifecycle_command_or_referenced_script(command)
+        assert result is False
+
+    def test_command_with_embedded_nul_path_never_crashes(self):
+        """#76762: a command whose text itself contains an embedded NUL byte
+        in a path token must never crash the guard.
+
+        Before the complete fix, this NUL-bearing path reached
+        _read_referenced_script's os.open(), which only caught OSError, so
+        ValueError: embedded null byte escaped and took down the guard (and
+        every guarded terminal call in the gateway process).
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        # A NUL byte directly embedded in the command text.
+        command = "/tmp/fake\x00bin --version"
+        result = contains_gateway_lifecycle_command_or_referenced_script(command)
+        assert result is False
+
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""

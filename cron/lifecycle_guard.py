@@ -255,10 +255,19 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
 
 def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads."""
+    # A path containing an embedded NUL byte can never be a real script on
+    # disk (POSIX filenames are NUL-terminated), and os.open / Path.resolve
+    # raise `ValueError: embedded null byte` for such paths. A guarded path
+    # must never crash the guard (#76762), so skip it as "nothing to scan"
+    # up front rather than relying on an exception handler below.
+    if "\x00" in str(path):
+        return None, False
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
-    except OSError:
+    except (OSError, ValueError):
+        # OSError: unreadable/long/missing paths. ValueError: embedded NUL
+        # byte from a NUL-bearing path (defence-in-depth, #76762).
         return None, False
     try:
         metadata = os.fstat(descriptor)
