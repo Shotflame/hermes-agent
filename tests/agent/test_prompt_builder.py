@@ -50,6 +50,28 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
+    def test_memory_guidance_is_doctrine_aligned_pointer_not_fact(self):
+        """Regression: MEMORY_GUIDANCE must follow the skill-based memory
+        doctrine (pointer-not-fact framing): when a fact has a permanent
+        home in a file/board/calendar/contact, the agent should save the
+        pointer, not duplicate the fact into memory."""
+        assert "save the pointer, not the fact" in MEMORY_GUIDANCE
+        assert "if a fact has a home" in MEMORY_GUIDANCE
+        assert "memory-worthy" in MEMORY_GUIDANCE
+        assert "pointer to where they live" in MEMORY_GUIDANCE
+        # The doctrine still allows compact durable facts (lowercase) — the
+        # surrounding text must not have regressed.
+        assert "durable facts" in MEMORY_GUIDANCE
+
+    def test_memory_guidance_lacks_conflicting_instruction(self):
+        """Regression: the pre-doctrine wording told the agent to blanket
+        'save durable facts using the memory tool' including environment
+        details and tool quirks — which conflicts with the pointer-not-fact
+        doctrine. That conflicting instruction must not be present."""
+        assert "using the memory tool" not in MEMORY_GUIDANCE
+        assert "environment details" not in MEMORY_GUIDANCE
+        assert "tool quirks" not in MEMORY_GUIDANCE
+
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE

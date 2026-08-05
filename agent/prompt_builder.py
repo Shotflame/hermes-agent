@@ -163,8 +163,12 @@ HERMES_AGENT_HELP_GUIDANCE = (
 )
 
 MEMORY_GUIDANCE = (
-    "You have persistent memory across sessions. Save durable facts using the memory "
-    "tool: user preferences, environment details, tool quirks, and stable conventions. "
+    "You have persistent memory across sessions. Save pointers and operating facts. "
+    "Not all durable facts are memory-worthy: if a fact has a home in a file, a board, "
+    "a calendar, or a contact record, save the pointer, not the fact. Prefer saving "
+    "user preferences, corrections, and stable conventions you must hold in future "
+    "turns; personal details belong in structured stores — memory holds at most a "
+    "pointer to where they live. "
     "Memory is injected into every turn, so keep it compact and focused on facts that "
     "will still matter later.\n"
     "Prioritize what reduces future user steering — the most valuable memory is one "
