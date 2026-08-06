@@ -1265,6 +1265,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             file_name or os.path.basename(file_path),
         )
 
+    async def send_sticker(
+        self,
+        chat_id: str,
+        sticker_path: str,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a sticker natively via the Baileys bridge.
+
+        The bridge's ``/send-media`` endpoint with ``mediaType: \"sticker\"``
+        sends a Baileys ``stickerMessage`` so WhatsApp renders it as a
+        sticker bubble, not an inline image.
+        """
+        return await self._send_media_to_bridge(
+            chat_id, sticker_path, "sticker", caption=None,
+        )
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator via bridge."""
         if not self._running or not self._http_session:

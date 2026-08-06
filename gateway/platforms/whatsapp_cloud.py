@@ -1259,6 +1259,29 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reply_to=reply_to,
         )
 
+    async def send_sticker(
+        self,
+        chat_id: str,
+        sticker_path: str,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a sticker via the Cloud API's native sticker type.
+
+        ``sticker_path`` should be a local path to a ``.webp`` file
+        (static sticker) or ``.webpm`` (animated). Meta's Cloud API
+        expects ``image/webp`` and enforces a 100 KB animated / 500 KB
+        static cap — enforced inside ``_upload_media`` via the ``sticker``
+        entry in ``_MEDIA_SIZE_LIMITS``.
+
+        Unlike ``send_image_file`` / ``send_document``, no ``caption`` or
+        ``filename`` is sent — WhatsApp stickers are decorational media
+        that Meta's API does not support captioning.
+        """
+        return await self._send_media_from_path_or_link(
+            chat_id, sticker_path, "sticker", reply_to=reply_to,
+        )
+
     # ------------------------------------------------------------------ opus conversion
     async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
         """Convert an MP3 to ``audio/ogg; codecs=opus`` for voice bubbles.

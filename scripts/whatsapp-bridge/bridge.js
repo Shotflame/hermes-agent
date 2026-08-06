@@ -980,6 +980,11 @@ app.post('/send-media', async (req, res) => {
       default:
         msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: 'document', caption, fileName });
         break;
+      case 'sticker':
+        // WhatsApp native sticker — sends as stickerMessage, not image.
+        // Baileys handles .webp (static) and .webpm (animated).
+        msgPayload = { sticker: buffer, mimetype: 'image/webp' };
+        break;
     }
 
     const sent = await sendWithTimeout(chatId, msgPayload);
