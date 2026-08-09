@@ -507,6 +507,63 @@ def _list_available_patches(
         return []
 
 
+def _find_existing_safe_generation(
+    python_root: Path,
+    request: str,
+    current: SQLiteRuntimeInfo,
+) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
+    """Check if an existing generation satisfies the repair request.
+    
+    If a generation directory exists with:
+    - The same Python version (major.minor.patch or higher)
+    - Safe SQLite (not vulnerable)
+    - Matching the requested version line
+    
+    Then reuse it instead of creating a new one. This prevents accumulation of
+    duplicate generations on repeated repair calls (issue #82427).
+    
+    Returns (generation_path, python_path, info) if found, else None.
+    """
+    if not python_root.exists():
+        return None
+    
+    # Find all existing generation directories, sorted newest-first
+    # (assumption: newer directory names = newer filesystem timestamps)
+    for generation in sorted(python_root.glob("generation-*"), reverse=True):
+        if not generation.is_dir():
+            continue
+        
+        # Find the python binary in this generation
+        candidates = list(generation.glob("**/bin/python*"))
+        if not candidates:
+            continue
+        
+        # Prefer the first python executable found
+        python = candidates[0]
+        
+        # Probe this generation's runtime
+        existing = probe_sqlite_runtime(python)
+        if existing is None:
+            continue
+        
+        # Check if it matches our requirements:
+        # 1. Same Python minor version (e.g., 3.11.x)
+        # 2. Not vulnerable SQLite
+        # 3. Same or newer version as what we're installing
+        if (existing.python_version[:2] == current.python_version[:2] and
+            not existing.wal_reset_vulnerable and
+            existing.python_version >= current.python_version):
+            logger.info(
+                "Reusing existing safe generation for Python %s (was %s): %s",
+                ".".join(str(p) for p in existing.python_version),
+                ".".join(str(p) for p in current.python_version),
+                generation,
+            )
+            return generation, python, existing
+    
+    return None
+
+
 def _attempt_install_generation(
     uv_bin: str,
     request: str,
@@ -626,6 +683,12 @@ def _install_safe_python_generation(
     _make_world_traversable(python_root)
 
     request = _runtime_request(current)
+    
+    # Check if a suitable generation already exists (issue #82427)
+    existing = _find_existing_safe_generation(python_root, request, current)
+    if existing is not None:
+        return existing
+    
     print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
     result = _attempt_install_generation(
         uv_bin, request, project_root=project_root,
