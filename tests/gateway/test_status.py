@@ -180,6 +180,7 @@ class TestGatewayRuntimeStatus:
             "pid": 99999,
             "start_time": 1000.0,
             "kind": "hermes-gateway",
+            "hermes_home": str(tmp_path / "profiles" / "old-name"),
             "platforms": {},
             "updated_at": "2025-01-01T00:00:00Z",
         }))
@@ -189,6 +190,7 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
+        assert payload["hermes_home"] == str(tmp_path.resolve()), "hermes_home should be refreshed, not preserved"
 
 
     def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
