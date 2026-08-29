@@ -9,6 +9,7 @@ import {
   DEFAULT_OUTPUT_TAIL_LIMIT,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
+  pinnedLstartEnv,
   probeStartMarker,
   processStartMarker
 } from './backend-claim'
@@ -69,6 +70,18 @@ test('processStartMarker resolves a real marker for the current process', async 
 test('processStartMarker rejects for a PID that does not exist', async () => {
   // Largest PIDs are bounded well below this on every supported platform.
   await assert.rejects(processStartMarker(2 ** 30 + 12345))
+})
+
+test('pinnedLstartEnv forces TZ=UTC and C locale so lstart never drifts with the host zone', () => {
+  // Regression for #93705: macOS `ps -o lstart=` renders a naive local-time
+  // string with no offset. If the system timezone/locale changes between the
+  // Desktop's spawn-time stamp and the backend's poll-time re-derivation, the
+  // SAME process start serializes differently and a healthy backend is killed.
+  // Pinning TZ=UTC + LC_ALL=C makes the marker byte-identical across changes.
+  const env = pinnedLstartEnv({ TZ: 'Asia/Tokyo', LC_TIME: 'fr_FR.UTF-8' } as NodeJS.ProcessEnv)
+
+  assert.equal(env.TZ, 'UTC')
+  assert.equal(env.LC_ALL, 'C')
 })
 
 // --- PID-only marker helpers --------------------------------------------------

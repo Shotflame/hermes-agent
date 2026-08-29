@@ -57,3 +57,82 @@ def test_parent_watchdog_preserves_legacy_exact_windows_marker():
         )
         is False
     )
+
+
+def test_process_start_marker_pins_utc_locale_for_macos_lstart(monkeypatch):
+    """Regression for #93705: the macOS `ps:<lstart>` marker must not drift
+    when the host timezone or locale changes between the Desktop's spawn-time
+    stamp and the backend's poll-time re-derivation, or a HEALTHY backend is
+    misread as orphaned and killed.
+
+    We simulate a timezone change by driving the real ``_process_start_marker``
+    under two different host ``TZ`` values and standing in for the ``ps``
+    binary with a fake that renders ``lstart`` using the environment it is
+    given (exactly what macOS ``ps`` does with localtime+strftime). With the
+    fix the production code pins ``TZ=UTC``/``LC_ALL=C`` when it runs ``ps``,
+    so both probes yield the identical marker and the live parent is not
+    treated as orphaned. Without the pin the two renders differ and the same
+    healthy process looks dead.
+    """
+    import os
+    from types import SimpleNamespace
+
+    from hermes_cli import web_server
+
+    fake_epoch_s = 1_726_000_000
+
+    def fake_ps_lstart(args, **kwargs):
+        # Faithful macOS `ps`: render the fixed start moment as a naive local
+        # wall-clock using the TZ + LC_ALL in the env passed to the child.
+        # Without the fix the production code calls `ps` with NO env override,
+        # so the child inherits the host TZ — reproducing the original drift.
+        env = kwargs.get("env") or os.environ
+        old_tz = os.environ.get("TZ")
+        old_lc = os.environ.get("LC_ALL")
+        os.environ["TZ"] = env.get("TZ", old_tz or "UTC")
+        os.environ["LC_ALL"] = env.get("LC_ALL", old_lc or "C")
+        try:
+            import time
+
+            try:
+                time.tzset()
+            except AttributeError:
+                pass
+            rendered = time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(fake_epoch_s))
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            if old_lc is None:
+                os.environ.pop("LC_ALL", None)
+            else:
+                os.environ["LC_ALL"] = old_lc
+        return SimpleNamespace(returncode=0, stdout=rendered, stderr="")
+
+    monkeypatch.setattr(web_server, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(web_server.subprocess, "run", fake_ps_lstart)
+
+    # Same process start moment rendered under two host timezones produces
+    # different naive strings on a non-pinned ps; the marker must not drift.
+    def marker_under_tz(tz: str) -> str:
+        os.environ["TZ"] = tz
+        try:
+            return web_server._process_start_marker(4242)
+        finally:
+            del os.environ["TZ"]
+
+    spawn_marker = marker_under_tz("Asia/Tokyo")  # what Desktop stamped at spawn
+    poll_marker = marker_under_tz("America/New_York")  # host TZ changed by the poll
+
+    # The real assertion: the marker is timezone-invariant, so the decision
+    # must keep the live parent alive.
+    assert spawn_marker == poll_marker
+    assert (
+        _is_serve_orphaned(
+            4242,
+            spawn_marker,
+            process_start_marker=lambda _pid: poll_marker,
+        )
+        is False
+    )

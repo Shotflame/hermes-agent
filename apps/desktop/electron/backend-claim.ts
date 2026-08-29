@@ -23,16 +23,40 @@ import fs from 'node:fs'
 import { electronProcessStartMarker } from './parent-process-identity'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
-export function execText(command: string, args: string[], { timeout = 3000 } = {}): Promise<string> {
+export function execText(
+  command: string,
+  args: string[],
+  { timeout = 3000, env }: { timeout?: number; env?: NodeJS.ProcessEnv } = {}
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
-      if (error) {
-        reject(error)
-      } else {
-        resolve(String(stdout || '').trim())
+    execFile(
+      command,
+      args,
+      hiddenWindowsChildOptions({ encoding: 'utf8', timeout, ...(env ? { env } : {}) }),
+      (error, stdout) => {
+        if (error) {
+          reject(error)
+        } else {
+          resolve(String(stdout || '').trim())
+        }
       }
-    })
+    )
   })
+}
+
+/**
+ * Environment that pins `ps -o lstart` to a timezone- and locale-independent
+ * rendering. macOS `ps` formats the process start with
+ * localtime()+strftime('%c'): a naive local-time string with no UTC offset.
+ * The parent-death watchdog compares the marker this Desktop stamps at spawn
+ * against a value the Python backend re-derives at poll time by running the
+ * same `ps`. If the system timezone (or locale) changes between the two, the
+ * SAME process start renders as a different string and a healthy backend is
+ * misread as orphaned and killed (#93705). Forcing TZ=UTC and the C locale
+ * makes the text byte-identical across zone/locale changes.
+ */
+export function pinnedLstartEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...base, TZ: 'UTC', LC_ALL: 'C' }
 }
 
 /**
@@ -85,7 +109,11 @@ export async function processStartMarker(pid: number): Promise<string> {
     return `win:${ticks}`
   }
 
-  const started = await execText('ps', ['-p', String(pid), '-o', 'lstart='])
+  const started = await execText('ps', ['-p', String(pid), '-o', 'lstart='], {
+    // macOS lstart is TZ/locale shaped; pin it so the parent marker the
+    // backend re-derives matches exactly under host timezone changes (#93705).
+    env: pinnedLstartEnv()
+  })
 
   if (!started) {
     throw new Error(`Missing process start marker for PID ${pid}`)

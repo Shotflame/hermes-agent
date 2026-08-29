@@ -207,11 +207,21 @@ def _process_start_marker(pid: int) -> str:
         filetime = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
         return f"win:{filetime + 504911232000000000}"
 
+    # macOS `ps -o lstart=` renders the process start through libc
+    # localtime()+strftime('%c'): a naive local-time string with NO UTC offset
+    # and no date/timezone annotation. The producer stamps that string at
+    # spawn and the watchdog re-derives it later; if the system timezone (or
+    # locale) changes between the two probes, the SAME process start renders
+    # as a DIFFERENT string and a healthy backend is misread as orphaned and
+    # killed. Pin TZ=UTC and the C locale so the marker text is byte-identical
+    # regardless of the host zone/locale, making exact string equality a true
+    # "same process incarnation" test (#93705).
     result = subprocess.run(
         ["ps", "-p", str(pid), "-o", "lstart="],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
     )
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
